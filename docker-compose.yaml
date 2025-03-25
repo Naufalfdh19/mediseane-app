@@ -1,0 +1,120 @@
+version: '3.9'
+
+services:
+  cadvisor:
+    container_name: cadvisor
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    ports:
+      - "8080:8080"
+    volumes: 
+      - "/:/rootfs"
+      - "/var/run:/var/run"
+      - "/sys:/sys"
+      - "/var/lib/docker/:/var/lib/docker"
+      - "/dev/disk/:/dev/disk"
+    privileged: true
+    devices: 
+      - "/dev/kmsg"
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes: 
+      - "./infra/prometheus.yml:/etc/prometheus/prometheus.yml"
+      - "prometheus_data:/prometheus"
+    privileged: true
+    depends_on:
+      - cadvisor
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - DS_PROMETHEUS=prometheus
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=smtp.gmail.com:587  
+      # - GF_SMTP_PORT=1025
+      - GF_SMTP_USER=${GF_SMTP_USER}
+      - GF_SMTP_PASSWORD=${GF_SMTP_PASSWORD}
+      - GF_SERVER_ROOT_URL=https://digitalent.games.test.shopee.io/vm5/grafana
+    volumes: 
+      - "grafana-data:/var/lib/grafana"
+      - "./infra/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml"
+      - "./infra/dashboard.json:/var/lib/grafana/dashboards/dashboard.json"
+      - "./infra/default.yaml:/etc/grafana/provisioning/dashboards/default.yaml"
+    privileged: true
+    depends_on:
+      - prometheus
+  db:
+    image: postgis/postgis:16-3.5
+    restart: 'always'
+    ports:
+      - '8081:5432'
+    volumes:
+      - ./backend/table.sql:/docker-entrypoint-initdb.d/table.sql
+      - ./backend/data:/data
+      # - "postgis-data:/var/lib/postgresql/data"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mediseane_db
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d mediseane_db']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  redis:
+    image: redis:7.4.1
+    restart: always
+    ports:
+        - "6379:6379"
+
+  rabbitmq:
+    image: heidiks/rabbitmq-delayed-message-exchange:4.0.2-management
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivity
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - 8000:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - 3003:3003
+  nginx:
+    image: nginx:1.27.3-bookworm-perl
+    volumes:
+    - ./logs:/var/log/nginx
+    - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+    - 80:80
+    depends_on:
+      - backend
+      - frontend
+      - grafana
+
+volumes:
+  grafana-data:
+  # postgis-data:
+  prometheus_data:
+  rabbitmq:
